@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
 	"os/exec"
 	"time"
 )
@@ -21,38 +23,46 @@ type TestRequest struct {
 }
 
 type TestResponse struct {
-	Passed []int `json:passed`
+	Passed  []int           `json:"passed"`
+	Results []RunCodeResult `json:"results"`
 }
 
-func runCode(code string, input string, expected string, index int, c chan int) {
-	result := -1
+type RunCodeResult struct {
+	TestCase int    `json:"test_case"`
+	Output   string `json:"output"`
+}
+
+func runCode(code string, input string, test_case int, c chan RunCodeResult) {
+	// Create temp file for users code:
+	file, err := ioutil.TempFile("temp", "prefix")
+	if err != nil {
+		c <- RunCodeResult{TestCase: test_case, Output: "Could not create file for users code -> " + err.Error()}
+		return
+	}
+	defer os.Remove(file.Name())
+
+	_, err = file.WriteString(code)
+	if err != nil {
+		c <- RunCodeResult{TestCase: test_case, Output: "Could not write users code to temporary file"}
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "python", "python-exec", code)
-	//cmd := exec.CommandContext(ctx, "ls")
+	cmd := exec.CommandContext(ctx, "python", file.Name())
 
 	stdin := bytes.Buffer{}
 	stdin.Write([]byte(input))
 	cmd.Stdin = &stdin
 
 	out, err := cmd.CombinedOutput()
-	if ctx.Err() != context.DeadlineExceeded {
-		c <- -1
-		return
-	}
 	if err != nil {
-		c <- -1
+		c <- RunCodeResult{TestCase: test_case, Output: string(out)}
 		return
 	}
 
-	if string(out) == expected {
-		c <- index
-		return
-	}
-
-	c <- result
+	c <- RunCodeResult{TestCase: test_case, Output: string(out)}
 }
 
 func testCode(w http.ResponseWriter, r *http.Request) {
@@ -66,18 +76,18 @@ func testCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	c := make(chan int)
+	c := make(chan RunCodeResult)
 	for index, test_case := range request.TestCases {
-		go runCode(request.Code, test_case.Input, test_case.Output, index, c)
+		go runCode(request.Code, test_case.Input, index, c)
 	}
 
-	response := TestResponse{make([]int, 0, len(request.TestCases))}
+	response := TestResponse{make([]int, 0, len(request.TestCases)), make([]RunCodeResult, 0, len(request.TestCases))}
 	for range request.TestCases {
-		index := <-c
-		if index == -1 {
-			continue
+		result := <-c
+		response.Results = append(response.Results, result)
+		if result.Output == request.TestCases[result.TestCase].Output {
+			response.Passed = append(response.Passed, result.TestCase)
 		}
-		response.Passed = append(response.Passed, index)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
