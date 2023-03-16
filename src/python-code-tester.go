@@ -9,17 +9,18 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
 	"time"
 )
 
 type TestCase struct {
-	Input  string `json:"input"`
-	Output string `json:"output"`
+	Input       string `json:"input"`
+	OutputRegex string `json:"output_regex"`
 }
 
 type TestRequest struct {
 	TestCases []TestCase `json:"test_cases"`
-	Code      string
+	Code      string     `json:"code"`
 }
 
 type TestResponse struct {
@@ -85,7 +86,13 @@ func testCode(w http.ResponseWriter, r *http.Request) {
 	for range request.TestCases {
 		result := <-c
 		response.Results = append(response.Results, result)
-		if result.Output == request.TestCases[result.TestCase].Output {
+		regex := request.TestCases[result.TestCase].OutputRegex
+		matched, err := regexp.Match(regex, []byte(result.Output))
+		if err != nil {
+			// Regex is wrong!
+
+		}
+		if matched {
 			response.Passed = append(response.Passed, result.TestCase)
 		}
 	}
